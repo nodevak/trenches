@@ -873,7 +873,7 @@ def main():
     send_tg(TG_API_1, flt_msg(F1))
     send_tg(TG_API_2, flt_msg(F2))
     send_tg(TG_API_3, "Started: <b>Dump Alert</b>\nAlerts when Bot 1 token dumps " + "{:.0f}".format(DUMP_THRESHOLD*100) + "% from ATH\n/tracking — see tracked count")
-    send_tg(TG_API_4, "Started: <b>Recovery Alert</b>\nAlerts when dumped token recovers " + "{:.0f}".format(RECOVERY_THRESHOLD*100) + "% from ATL (MC >= " + fmt_usd(RECOVERY_MIN_MCAP) + ")\n/tracking — see tracked count")
+    send_tg(TG_API_4, "Started: <b>Recovery Alert</b>\nAlerts when dumped token recovers " + "{:.0f}".format(RECOVERY_THRESHOLD * 100) + "% from ATL\n/tracking — see tracked count")
 
     print("\n  Running. Press Ctrl+C to stop.\n")
     while True:

@@ -338,20 +338,25 @@ def fetch_token_data(addresses: list) -> list:
         except Exception as e:
             print(f"  [API] error: {e}")
         time.sleep(0.3)
-    return all_pairs
+    # If multiple pairs exist for same token, keep the one with highest liquidity
+    best = {}
+    for p in all_pairs:
+        addr = (p.get("baseToken") or {}).get("address", "")
+        if not addr: continue
+        liq = (p.get("liquidity") or {}).get("usd", 0) or 0
+        if addr not in best or liq > ((best[addr].get("liquidity") or {}).get("usd", 0) or 0):
+            best[addr] = p
+    return list(best.values())
 
 def passes_filter(pair, flt) -> bool:
-    mc   = pair.get("marketCap", 0) or 0
-    vol  = (pair.get("volume") or {}).get("h24", 0) or 0
-    age  = age_hours(pair)
-    info = pair.get("info") or {}
-    has_profile = bool(info.get("imageUrl") or info.get("websites") or info.get("socials"))
+    mc  = pair.get("marketCap", 0) or 0
+    vol = (pair.get("volume") or {}).get("h24", 0) or 0
+    age = age_hours(pair)
     return (
         mc >= flt["min_mcap"] and
         mc <= flt["max_mcap"] and
         age <= flt["max_age_h"] and
-        vol >= flt["min_vol"] and
-        has_profile
+        vol >= flt["min_vol"]
     )
 
 def send_tg(api_url, text):
@@ -648,43 +653,43 @@ def filter_loop(key, api_url, flt, initial_delay=0):
 # ─── DUMP MONITOR LOOP (Bot 3) ────────────────────────────────────────────────
 
 def dump_monitor_loop():
-    print("  [DUMP] Dump monitor started")
+    print("  [DUMP] Dump monitor started (every 20s)")
     while True:
-        time.sleep(FILTER_POLL_SEC)
+        time.sleep(20)  # faster than filter loop for tighter ATH/dump detection
         try:
             with lock:
                 tracked = dict(ath_tracking)
 
-            # Only track tokens not yet alerted for dump
             to_check = [addr for addr, data in tracked.items() if not data["alerted_dump"]]
             if not to_check:
                 continue
 
             pairs = fetch_token_data(to_check)
             for pair in pairs:
-                addr  = (pair.get("baseToken") or {}).get("address", "")
+                addr      = (pair.get("baseToken") or {}).get("address", "")
                 if not addr or addr not in tracked: continue
 
                 cur_price = get_price(pair)
                 if cur_price <= 0: continue
 
                 data = tracked[addr]
-                # Update ATH if price is higher
+
+                # Update ATH if price is higher — do NOT continue, still check dump
+                # (price could have been higher mid-cycle and now falling)
                 if cur_price > data["ath"]:
-                    data["ath"] = cur_price
                     with lock:
                         ath_tracking[addr]["ath"] = cur_price
                     db_upsert_ath(addr, cur_price, False)
-                    continue
+                    tracked[addr]["ath"] = cur_price
+                    continue  # price still rising, no dump yet
 
-                # Check dump threshold
+                # Check dump threshold against latest ATH
                 drop_pct = (data["ath"] - cur_price) / data["ath"]
                 if drop_pct >= DUMP_THRESHOLD:
                     symbol = (pair.get("baseToken") or {}).get("symbol", "?")
                     print("  [DUMP] ALERT: " + symbol + " dumped " + "{:.1f}".format(drop_pct*100) + "% | " + addr)
                     send_tg(TG_API_3, build_dump_alert(pair, data["ath"]))
 
-                    # Mark alerted and start recovery tracking
                     with lock:
                         ath_tracking[addr]["alerted_dump"] = True
                         recovery_tracking[addr] = {"atl": cur_price, "alerted_recovery": False}
@@ -698,9 +703,9 @@ def dump_monitor_loop():
 # ─── RECOVERY MONITOR LOOP (Bot 4) ───────────────────────────────────────────
 
 def recovery_monitor_loop():
-    print("  [RECOVERY] Recovery monitor started")
+    print("  [RECOVERY] Recovery monitor started (every 20s)")
     while True:
-        time.sleep(FILTER_POLL_SEC)
+        time.sleep(20)  # faster for tighter ATL/recovery detection
         try:
             with lock:
                 tracked = dict(recovery_tracking)
@@ -711,23 +716,23 @@ def recovery_monitor_loop():
 
             pairs = fetch_token_data(to_check)
             for pair in pairs:
-                addr  = (pair.get("baseToken") or {}).get("address", "")
+                addr      = (pair.get("baseToken") or {}).get("address", "")
                 if not addr or addr not in tracked: continue
 
                 cur_price = get_price(pair)
-                mc        = pair.get("marketCap", 0) or 0
                 if cur_price <= 0: continue
 
                 data = tracked[addr]
-                # Update ATL if price is lower
+
+                # Update ATL if price goes lower — keep tracking the real bottom
                 if cur_price < data["atl"]:
-                    data["atl"] = cur_price
                     with lock:
                         recovery_tracking[addr]["atl"] = cur_price
                     db_upsert_recovery(addr, cur_price, False)
-                    continue
+                    tracked[addr]["atl"] = cur_price
+                    continue  # still falling, no recovery yet
 
-                # Check recovery threshold — just 50% up from ATL, no MC filter
+                # Check recovery from lowest point
                 rise_pct = (cur_price - data["atl"]) / data["atl"]
                 if rise_pct >= RECOVERY_THRESHOLD:
                     symbol = (pair.get("baseToken") or {}).get("symbol", "?")
@@ -873,7 +878,7 @@ def main():
     send_tg(TG_API_1, flt_msg(F1))
     send_tg(TG_API_2, flt_msg(F2))
     send_tg(TG_API_3, "Started: <b>Dump Alert</b>\nAlerts when Bot 1 token dumps " + "{:.0f}".format(DUMP_THRESHOLD*100) + "% from ATH\n/tracking — see tracked count")
-    send_tg(TG_API_4, "Started: <b>Recovery Alert</b>\nAlerts when dumped token recovers " + "{:.0f}".format(RECOVERY_THRESHOLD * 100) + "% from ATL\n/tracking — see tracked count")
+    send_tg(TG_API_4, "Started: <b>Recovery Alert</b>\nAlerts when dumped token recovers " + "{:.0f}".format(RECOVERY_THRESHOLD*100) + "% from ATL\n/tracking — see tracked count")
 
     print("\n  Running. Press Ctrl+C to stop.\n")
     while True:
